@@ -13,10 +13,33 @@
 
 ---
 
-## 🚀 Быстрый старт
+## 🚀 Быстрый старт на VPS (одна команда)
+
+Подходит для Ubuntu/Debian. Рекомендуется зарубежный VPS — тогда Telegram API доступен напрямую, без прокси.
+
+```bash
+git clone https://github.com/iSeeAll-bot/iSeeAll.git
+cd iSeeAll
+sudo bash install.sh
+```
+
+Установщик сам:
+- поставит Python3, виртуальное окружение и все зависимости;
+- скопирует проект в `/opt/iSeeAll`;
+- спросит **токен бота** (из @BotFather) и **твой Telegram ID** (из @userinfobot);
+- создаст `.env`, настроит systemd-сервис с автозапуском и сразу запустит бота.
+
+После установки напиши своему боту `/start` в Telegram, затем подключи его к аккаунту:
+**Профиль → Изменить → Автоматизация чатов (Бизнес)** → добавь бота и разреши доступ к сообщениям.
+
+---
+
+## 🛠 Ручная установка (если хочется своими руками)
 
 ### 1. Установка зависимостей
 ```bash
+python3 -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
@@ -42,6 +65,11 @@ pip install -r requirements.txt
 ```bash
 python bot.py
 ```
+
+---
+
+## 💬 Поддержка
+Вопросы по установке и работе: **@xicge**
 
 ---
 
