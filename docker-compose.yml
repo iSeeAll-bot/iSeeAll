@@ -1,0 +1,9 @@
+services:
+  iseeall:
+    build: .
+    container_name: ${BOT_NAME:-iSeeAll}
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+      - ./saved_media:/app/saved_media

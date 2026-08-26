@@ -34,6 +34,19 @@ sudo bash install.sh
 
 ---
 
+## 🐳 Docker (альтернатива systemd)
+
+```bash
+cp .env.example .env
+nano .env                        # впиши BOT_TOKEN, OWNER_ID, BOT_NAME
+docker compose up -d --build
+docker compose logs -f
+```
+
+Данные хранятся на хосте: `./data` и `./saved_media`.
+
+---
+
 ## 🛠 Ручная установка (если хочется своими руками)
 
 ### 1. Установка зависимостей

@@ -15,6 +15,9 @@ OWNER_ID = int(OWNER_ID_STR) if OWNER_ID_STR.isdigit() else 0
 
 CACHE_DAYS = int(os.getenv("CACHE_DAYS", "30"))
 
+BOT_NAME = os.getenv("BOT_NAME", "").strip() or "iSeeAll"
+REPO_URL = os.getenv("REPO_URL", "https://github.com/iSeeAll-bot/iSeeAll").strip()
+
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "business_messages.db"
 MEDIA_DIR = BASE_DIR / "saved_media"

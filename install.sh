@@ -7,8 +7,10 @@
 set -euo pipefail
 
 CONTACT="@xicge"
-INSTALL_DIR="/opt/iSeeAll"
-SERVICE_NAME="iseeall"
+REPO_URL="https://github.com/iSeeAll-bot/iSeeAll"
+DEFAULT_NAME="iSeeAll"
+INSTALL_DIR=""
+SERVICE_NAME=""
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -42,7 +44,22 @@ fi
 command -v python3 >/dev/null 2>&1 || fail "python3 не найден. Установи его вручную."
 info "Python: $(python3 --version)"
 
-# ---------- 2. Файлы проекта ----------
+# ---------- 2. Название инстанса ----------
+echo
+echo "Название будет использовано в папке установки, имени сервиса,"
+echo "и в приветствии твоего бота."
+read -r -p "Название бота/инстанса [${DEFAULT_NAME}]: " INSTANCE
+INSTANCE="${INSTANCE:-${DEFAULT_NAME}}"
+while ! [[ "$INSTANCE" =~ ^[A-Za-z0-9_-]+$ ]]; do
+    warn "Только латиница, цифры, дефис и подчёркивание. Пример: iSeeAll"
+    read -r -p "Название бота/инстанса [${DEFAULT_NAME}]: " INSTANCE
+    INSTANCE="${INSTANCE:-${DEFAULT_NAME}}"
+done
+SERVICE_NAME="$(echo "$INSTANCE" | tr '[:upper:]' '[:lower:]')"
+INSTALL_DIR="/opt/${INSTANCE}"
+info "Папка: ${INSTALL_DIR} | Сервис: ${SERVICE_NAME}"
+
+# ---------- 3. Файлы проекта ----------
 info "Копирую проект в ${INSTALL_DIR}..."
 mkdir -p "$INSTALL_DIR"
 for f in bot.py config.py database.py requirements.txt README.md .env.example; do
@@ -86,6 +103,8 @@ cat > "$ENV_FILE" <<EOF
 BOT_TOKEN=${BOT_TOKEN}
 OWNER_ID=${OWNER_ID}
 CACHE_DAYS=${CACHE_DAYS}
+BOT_NAME=${INSTANCE}
+REPO_URL=${REPO_URL}
 EOF
 chmod 600 "$ENV_FILE"
 info "Конфигурация сохранена в ${ENV_FILE} (права 600)."

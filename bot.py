@@ -11,7 +11,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
-from config import BOT_TOKEN, OWNER_ID, CACHE_DAYS, HTTP_PROXY, HTTPS_PROXY
+from config import BOT_TOKEN, OWNER_ID, CACHE_DAYS, HTTP_PROXY, HTTPS_PROXY, BOT_NAME, REPO_URL
 import database as db
 
 logging.basicConfig(
@@ -183,7 +183,7 @@ async def on_business_connection(conn: types.BusinessConnection):
         if conn.is_enabled:
             await bot.send_message(
                 conn.user_chat_id,
-                f"✅ <b>iSeeAll успешно подключен к вашему бизнес-аккаунту!</b>\n\n"
+                f"✅ <b>{BOT_NAME} успешно подключен к вашему бизнес-аккаунту!</b>\n\n"
                 f"• Удаленные сообщения будут пересылаться вам сюда.\n"
                 f"• Если вам прислали фото/видео с таймером (одноразовое) — просто ответьте на него любым символом (например точкой <code>.</code>), и бот отправит вам его постоянную копию!"
             )
@@ -456,7 +456,7 @@ async def on_start_command(message: types.Message):
         return
     await ensure_owner_user_id(message.from_user.id)
     await message.answer(
-        f"👁 <b>I See All</b>\n"
+        f"👁 <b>{BOT_NAME}</b>\n"
         f"<i>Ничего не скроется.</i>\n\n"
         f"Привет, <b>{first_name}</b>!\n\n"
         f"Я сохраняю всё, что обычно пытаются скрыть или удалить:\n\n"
@@ -582,8 +582,22 @@ async def main():
         return
 
     await db.init_db()
+
+    # Обновляем описание бота со ссылкой на репозиторий (видно в профиле бота)
+    try:
+        await bot.set_my_description(
+            f"{BOT_NAME} — сохраняет удалённые сообщения и медиа с таймером "
+            f"в твоём Telegram Business.\n\nИсходный код: {REPO_URL}"
+        )
+        await bot.set_my_short_description(
+            f"{BOT_NAME} — ничего не скроется. Исходники: {REPO_URL}"
+        )
+        logger.info("Описание бота обновлено (set_my_description)")
+    except Exception as e:
+        logger.warning(f"Не удалось обновить описание бота: {e}")
+
     print("=" * 50)
-    print("🚀 iSeeAll Telegram Business Bot запущен!")
+    print(f"🚀 {BOT_NAME} Telegram Business Bot запущен!")
     print("=" * 50)
 
     asyncio.create_task(periodic_cleanup())
