@@ -1,0 +1,29 @@
+# Secrets & environment
+.env
+*.session
+*.session-journal
+
+# Bot data
+data/
+saved_media/
+
+# Scripts containing passwords / deploy helpers
+_ssh_diag.py
+_deploy.py
+_check.py
+
+# Backups
+*.bak
+*.bak_*
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# IDE / OS
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
