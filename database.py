@@ -53,6 +53,15 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_business_msg 
             ON messages(connection_id, chat_id, msg_id)
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS whispers (
+                token TEXT PRIMARY KEY,
+                sender_id INTEGER NOT NULL,
+                target_username TEXT NOT NULL,
+                text TEXT NOT NULL,
+                expires_at REAL NOT NULL
+            )
+        """)
         await db.commit()
 
 
@@ -69,6 +78,42 @@ async def set_setting(key: str, value: str):
             INSERT OR REPLACE INTO settings (key, value)
             VALUES (?, ?)
         """, (key, value))
+        await db.commit()
+
+
+async def set_muted_chat(connection_id: str, chat_id: int, muted: bool):
+    await set_setting(f"mute:{connection_id}:{chat_id}", "1" if muted else "0")
+
+
+async def is_chat_muted(connection_id: str, chat_id: int) -> bool:
+    return (await get_setting(f"mute:{connection_id}:{chat_id}")) == "1"
+
+
+async def save_whisper(token: str, sender_id: int, target_username: str, text: str, expires_at: float):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO whispers (token, sender_id, target_username, text, expires_at) VALUES (?, ?, ?, ?, ?)",
+            (token, sender_id, target_username, text, expires_at),
+        )
+        await db.commit()
+
+
+async def get_whisper(token: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM whispers WHERE token = ?", (token,)) as cursor:
+            return await cursor.fetchone()
+
+
+async def delete_whisper(token: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM whispers WHERE token = ?", (token,))
+        await db.commit()
+
+
+async def delete_expired_whispers(now: float):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM whispers WHERE expires_at < ?", (now,))
         await db.commit()
 
 
