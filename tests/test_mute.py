@@ -6,6 +6,8 @@ from bot import parse_mute_command, should_delete_for_mute
 def test_mute_command_is_recognized():
     assert parse_mute_command('.mute') == 'mute'
     assert parse_mute_command('.unmute') == 'unmute'
+    assert parse_mute_command('.ummute') == 'unmute'
+    assert parse_mute_command('  .UMMUTE  ') == 'unmute'
 
 
 def test_command_is_case_insensitive_and_ignores_spaces():

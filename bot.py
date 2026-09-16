@@ -288,7 +288,11 @@ def render_game(game: dict) -> str:
 
 def parse_mute_command(text: str | None) -> str | None:
     command = (text or "").strip().lower()
-    return command[1:] if command in {".mute", ".unmute"} else None
+    if command == ".mute":
+        return "mute"
+    if command in {".unmute", ".ummute"}:
+        return "unmute"
+    return None
 
 
 def is_game_command(text: str | None) -> bool:
@@ -575,6 +579,20 @@ async def on_business_message(message: types.Message):
         muted = command == "mute"
         await db.set_muted_chat(conn_id, message.chat.id, muted)
         status = "включён" if muted else "выключен"
+
+        # Автоматически удаляем сообщение с командой (.mute / .unmute / .ummute) из чата
+        try:
+            to_delete = [message.message_id]
+            if message.reply_to_message:
+                to_delete.append(message.reply_to_message.message_id)
+            await bot.delete_business_messages(
+                business_connection_id=conn_id,
+                message_ids=to_delete,
+            )
+            logger.info("🗑 Команда %s (id: %s) удалена из чата %s", command, to_delete, message.chat.id)
+        except Exception as exc:
+            logger.error("Не удалось удалить сообщение команды mute/unmute: %s", exc)
+
         await bot.send_message(
             owner_chat_id,
             f"{'🔇' if muted else '🔊'} <b>Мут {status}</b>\n"
