@@ -44,3 +44,106 @@ def test_build_dump_keyboard_pagination():
     assert nav_p2[0].callback_data == "dump:page:0"
     assert nav_p2[1].text == "📄 2/2"
 
+
+def test_generate_chat_dump_html_media():
+    from dump_generator import generate_chat_dump_html
+
+    messages = [
+        {
+            "msg_id": 1,
+            "date": "2026-09-17T10:00:00",
+            "sender_id": 123,
+            "sender_name": "Alice",
+            "sender_username": "alice",
+            "media_type": "video_note",
+            "file_id": "file_vn_1",
+            "text": None,
+            "caption": None,
+            "is_deleted": 0,
+            "delete_date": None,
+            "old_text": None,
+        },
+        {
+            "msg_id": 2,
+            "date": "2026-09-17T10:01:00",
+            "sender_id": 123,
+            "sender_name": "Alice",
+            "sender_username": "alice",
+            "media_type": "video",
+            "file_id": "file_vid_1",
+            "text": None,
+            "caption": "Cool video",
+            "is_deleted": 0,
+            "delete_date": None,
+            "old_text": None,
+        },
+        {
+            "msg_id": 3,
+            "date": "2026-09-17T10:02:00",
+            "sender_id": 123,
+            "sender_name": "Alice",
+            "sender_username": "alice",
+            "media_type": "animation",
+            "file_id": "file_anim_1",
+            "text": None,
+            "caption": None,
+            "is_deleted": 0,
+            "delete_date": None,
+            "old_text": None,
+        },
+        {
+            "msg_id": 4,
+            "date": "2026-09-17T10:03:00",
+            "sender_id": 123,
+            "sender_name": "Alice",
+            "sender_username": "alice",
+            "media_type": "video_note",
+            "file_id": "file_vn_missing",
+            "text": None,
+            "caption": None,
+            "is_deleted": 0,
+            "delete_date": None,
+            "old_text": None,
+        },
+    ]
+
+    media_map = {
+        "file_vn_1": ("fake_b64_vn", "video/mp4"),
+        "file_vid_1": ("fake_b64_vid", "video/mp4"),
+        "file_anim_1": ("fake_b64_anim", "video/mp4"),
+    }
+
+    html = generate_chat_dump_html(
+        messages=messages,
+        interlocutor_name="Alice",
+        interlocutor_username="alice",
+        interlocutor_id=123,
+        interlocutor_avatar_b64=None,
+        owner_name="Bob",
+        owner_username="bob",
+        owner_id=999,
+        owner_avatar_b64=None,
+        media_map=media_map,
+        is_chat_cleared=False,
+    )
+
+    # Check video_note rendering with real circular player
+    assert "video-note-box" in html
+    assert "fake_b64_vn" in html
+    assert "toggleVideoNote" in html
+    assert "Кружочек" in html
+
+    # Check video rendering with controls
+    assert "video-box" in html
+    assert "fake_b64_vid" in html
+    assert "Cool video" in html
+
+    # Check animation rendering
+    assert "anim-box" in html
+    assert "fake_b64_anim" in html
+
+    # Check missing media note fallback stub
+    assert "media-card-stub" in html
+    assert "Видеосообщение (кружочек)" in html
+
+

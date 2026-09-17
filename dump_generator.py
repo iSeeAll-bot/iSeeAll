@@ -38,7 +38,7 @@ async def get_avatar_base64(bot: Bot, target_id: int) -> str | None:
 async def download_media_base64(bot: Bot, file_id: str, media_type: str | None) -> tuple[str, str] | None:
     """
     Скачивает медиафайл по file_id и возвращает (base64_content, mime_type).
-    Ограничение по размеру: до 15 МБ, чтобы дамп генерировался быстро.
+    Ограничение по размеру: до 20 МБ (максимум для Telegram Bot API).
     """
     if not file_id:
         return None
@@ -47,8 +47,8 @@ async def download_media_base64(bot: Bot, file_id: str, media_type: str | None) 
         if not file_info.file_path:
             return None
 
-        # Проверка размера (до 15 МБ)
-        if file_info.file_size and file_info.file_size > 15 * 1024 * 1024:
+        # Проверка размера (до 20 МБ — лимит Telegram Bot API)
+        if file_info.file_size and file_info.file_size > 20 * 1024 * 1024:
             logger.warning(f"Медиа {file_id} слишком большое ({file_info.file_size} байт), пропуск")
             return None
 
@@ -260,20 +260,71 @@ def generate_chat_dump_html(
                         <div><b>Фотография</b></div>
                     </div>
                 """)
-        elif media_type in ("video", "video_note", "animation"):
+        elif media_type == "video_note":
             if media_data:
                 b64_val, mime_val = media_data
-                border_style = "border-radius:50%;width:220px;height:220px;object-fit:cover;" if media_type == "video_note" else "border-radius:8px;max-width:100%;max-height:360px;"
+                vn_id = f"vn_{msg['msg_id']}"
                 content_parts.append(f"""
-                    <div style="margin:4px 0;">
-                        <video controls style="{border_style}" src="data:{mime_val};base64,{b64_val}"></video>
+                    <div class="video-note-box" onclick="toggleVideoNote(this, '{vn_id}')">
+                        <video id="{vn_id}" class="video-note-media" loop playsinline preload="auto" src="data:{mime_val};base64,{b64_val}" onended="onVideoNoteEnded(this)"></video>
+                        <div class="vn-overlay">
+                            <div class="vn-play-icon">
+                                <svg viewBox="0 0 24 24" width="28" height="28" fill="white"><polygon points="7 4 20 12 7 20 7 4"></polygon></svg>
+                            </div>
+                        </div>
+                        <div class="vn-badge">Кружочек</div>
                     </div>
                 """)
             else:
                 content_parts.append("""
-                    <div style="display:flex;align-items:center;gap:8px;padding:4px 0;">
-                        <div style="font-size:22px;">🎬</div>
-                        <div><b>Видео / Кружочек</b></div>
+                    <div class="media-card-stub">
+                        <div class="media-stub-icon" style="background:#2b5278;">
+                            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><polygon points="10 8 16 12 10 16 10 8" fill="white"></polygon></svg>
+                        </div>
+                        <div class="media-stub-meta">
+                            <span class="media-stub-title">Видеосообщение (кружочек)</span>
+                            <span class="media-stub-desc">Медиафайл недоступен или &gt; 20 МБ</span>
+                        </div>
+                    </div>
+                """)
+        elif media_type == "video":
+            if media_data:
+                b64_val, mime_val = media_data
+                content_parts.append(f"""
+                    <div class="video-box">
+                        <video controls playsinline preload="metadata" src="data:{mime_val};base64,{b64_val}"></video>
+                    </div>
+                """)
+            else:
+                content_parts.append("""
+                    <div class="media-card-stub">
+                        <div class="media-stub-icon" style="background:#2481cc;">
+                            <svg viewBox="0 0 24 24" width="22" height="22" fill="white"><path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
+                        </div>
+                        <div class="media-stub-meta">
+                            <span class="media-stub-title">Видеозапись</span>
+                            <span class="media-stub-desc">Медиафайл недоступен или &gt; 20 МБ</span>
+                        </div>
+                    </div>
+                """)
+        elif media_type == "animation":
+            if media_data:
+                b64_val, mime_val = media_data
+                content_parts.append(f"""
+                    <div class="anim-box">
+                        <video autoplay loop muted playsinline src="data:{mime_val};base64,{b64_val}"></video>
+                    </div>
+                """)
+            else:
+                content_parts.append("""
+                    <div class="media-card-stub">
+                        <div class="media-stub-icon" style="background:#7b68ee;">
+                            <svg viewBox="0 0 24 24" width="22" height="22" fill="white"><path d="M19 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm-8 7H9.5v-.5h-2v3h2V13H11v1.5a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V11zm2.5 4H12V9h1.5v6zm4.5-4.5H16v1.5h1.5V13H16v2h-1.5V9H18v1.5z"/></svg>
+                        </div>
+                        <div class="media-stub-meta">
+                            <span class="media-stub-title">GIF-анимация</span>
+                            <span class="media-stub-desc">Медиафайл недоступен или &gt; 20 МБ</span>
+                        </div>
                     </div>
                 """)
         elif media_type == "document":
@@ -719,6 +770,138 @@ def generate_chat_dump_html(
             opacity: 0.94;
         }}
 
+        /* Real Video Note (Кружочек) */
+        .video-note-box {{
+            width: 240px;
+            height: 240px;
+            border-radius: 50%;
+            overflow: hidden;
+            position: relative;
+            cursor: pointer;
+            display: inline-block;
+            background: #000;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+            margin: 4px 0 6px;
+            user-select: none;
+            -webkit-mask-image: -webkit-radial-gradient(white, black);
+        }}
+        .video-note-media {{
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }}
+        .vn-overlay {{
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.25);
+            transition: background 0.2s, opacity 0.2s;
+        }}
+        .video-note-box:hover .vn-overlay {{
+            background: rgba(0, 0, 0, 0.15);
+        }}
+        .vn-play-icon {{
+            width: 54px;
+            height: 54px;
+            border-radius: 50%;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+            transition: transform 0.15s;
+        }}
+        .video-note-box:hover .vn-play-icon {{
+            transform: scale(1.08);
+        }}
+        .vn-play-icon svg {{
+            margin-left: 3px;
+        }}
+        .vn-badge {{
+            position: absolute;
+            bottom: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            color: #fff;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 10px;
+            pointer-events: none;
+            letter-spacing: 0.3px;
+            text-transform: uppercase;
+        }}
+
+        /* Real Video Box */
+        .video-box {{
+            margin: 4px 0 6px;
+            max-width: 440px;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #000;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+        }}
+        .video-box video {{
+            width: 100%;
+            max-height: 420px;
+            display: block;
+            border-radius: 8px;
+        }}
+
+        /* Animation / GIF */
+        .anim-box {{
+            margin: 4px 0 6px;
+            max-width: 380px;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+        }}
+        .anim-box video {{
+            width: 100%;
+            max-height: 380px;
+            display: block;
+            border-radius: 8px;
+        }}
+
+        /* Media Fallback Cards */
+        .media-card-stub {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 4px 0;
+        }}
+        .media-stub-icon {{
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            flex-shrink: 0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+        }}
+        .media-stub-meta {{
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }}
+        .media-stub-title {{
+            font-weight: 600;
+            font-size: 14px;
+            color: #000;
+        }}
+        .media-stub-desc {{
+            font-size: 11.5px;
+            color: #707579;
+        }}
+
         .doc-card {{
             display: flex;
             align-items: center;
@@ -882,11 +1065,16 @@ def generate_chat_dump_html(
             const dur = document.getElementById("dur_" + audioId);
 
             if (audio.paused) {{
-                // Pause all other playing audios
-                document.querySelectorAll("audio").forEach(a => {{
+                // Pause all other playing media
+                document.querySelectorAll("audio, video").forEach(a => {{
                     if (a !== audio && !a.paused) {{
                         a.pause();
-                        const pBtn = a.parentElement.querySelector(".play-btn");
+                        const pBox = a.closest(".video-note-box");
+                        if (pBox) {{
+                            const ov = pBox.querySelector(".vn-overlay");
+                            if (ov) ov.style.display = "flex";
+                        }}
+                        const pBtn = a.parentElement ? a.parentElement.querySelector(".play-btn") : null;
                         if (pBtn) {{
                             pBtn.querySelector(".icon-play").style.display = "block";
                             pBtn.querySelector(".icon-pause").style.display = "none";
@@ -932,6 +1120,47 @@ def generate_chat_dump_html(
             if (wave) wave.classList.remove("playing");
             const dur = document.getElementById("dur_" + audio.id);
             if (dur) dur.innerText = "Воспроизведение завершено";
+        }}
+
+        function toggleVideoNote(box, vidId) {{
+            const v = document.getElementById(vidId);
+            const overlay = box.querySelector(".vn-overlay");
+            if (!v) return;
+
+            if (v.paused) {{
+                // Pause all other playing media
+                document.querySelectorAll("video, audio").forEach(el => {{
+                    if (el !== v && !el.paused) {{
+                        el.pause();
+                        const pBox = el.closest(".video-note-box");
+                        if (pBox) {{
+                            const ov = pBox.querySelector(".vn-overlay");
+                            if (ov) ov.style.display = "flex";
+                        }}
+                        const pBtn = el.parentElement ? el.parentElement.querySelector(".play-btn") : null;
+                        if (pBtn) {{
+                            pBtn.querySelector(".icon-play").style.display = "block";
+                            pBtn.querySelector(".icon-pause").style.display = "none";
+                        }}
+                        const pWave = document.getElementById("wave_" + el.id);
+                        if (pWave) pWave.classList.remove("playing");
+                    }}
+                }});
+
+                v.play();
+                if (overlay) overlay.style.display = "none";
+            }} else {{
+                v.pause();
+                if (overlay) overlay.style.display = "flex";
+            }}
+        }}
+
+        function onVideoNoteEnded(v) {{
+            const box = v.closest(".video-note-box");
+            if (box) {{
+                const overlay = box.querySelector(".vn-overlay");
+                if (overlay) overlay.style.display = "flex";
+            }}
         }}
 
         function openModal(src) {{
@@ -988,16 +1217,21 @@ async def execute_and_send_dump(
     interlocutor_b64 = await get_avatar_base64(bot, chat_id)
     owner_b64 = await get_avatar_base64(bot, owner_id)
 
-    # Скачиваем реальные медиафайлы сообщений (фотографии, голосовые)
+    # Скачиваем реальные медиафайлы сообщений (фото, голосовые, видео, кружочки, GIF)
     media_map = {}
     media_tasks = []
     task_keys = []
+    sem = asyncio.Semaphore(8)
+
+    async def _download_safe(target_fid: str, target_mtype: str):
+        async with sem:
+            return await download_media_base64(bot, target_fid, target_mtype)
 
     for m in messages:
         fid = m["file_id"]
         mtype = m["media_type"]
-        if fid and mtype in ("voice", "audio", "photo", "video", "video_note") and fid not in media_map:
-            media_tasks.append(download_media_base64(bot, fid, mtype))
+        if fid and mtype in ("voice", "audio", "photo", "video", "video_note", "animation") and fid not in media_map:
+            media_tasks.append(_download_safe(fid, mtype))
             task_keys.append(fid)
 
     if media_tasks:
@@ -1038,9 +1272,9 @@ async def execute_and_send_dump(
         f"{caption_title}"
         f"👤 <b>Собеседник:</b> {target_name} (<code>{chat_id}</code>)\n"
         f"💬 <b>Сообщений в архиве:</b> {len(messages)}\n"
-        f"🎙 <b>Медиа встроено:</b> {len(media_map)} шт. (голос, фото)\n"
+        f"🎬 <b>Медиа встроено:</b> {len(media_map)} шт. (кружочки, видео, фото, голос)\n"
         f"🕒 <b>Дата выгрузки:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
-        f"<i>Откройте файл на телефоне или ПК — вы сможете прослушать голосовые и увидеть фото прямо в переписке!</i>"
+        f"<i>Откройте файл на телефоне или ПК — вы сможете смотреть видео, кружочки, фото и слушать голосовые прямо в переписке!</i>"
     )
 
     doc = BufferedInputFile(html_data.encode("utf-8"), filename=f"chat_dump_{clean_name}.html")
