@@ -84,6 +84,7 @@ def media_title(media_type: str | None, action: str) -> str:
 
 def start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📁 Мои дампы (/dump)", callback_data="dump:open_menu")],
         [InlineKeyboardButton(text="🔌 Как подключить?", callback_data="how_to_connect")],
         [InlineKeyboardButton(text="💻 GitHub", url=REPO_URL)],
     ])
@@ -993,15 +994,21 @@ async def on_start_command(message: types.Message):
         f"👁 <b>{BOT_NAME}</b> — <i>Ничего не скроется.</i>\n\n"
         f"Привет, <b>{first_name}</b>!\n\n"
         "Я помогаю сохранять историю твоих чатов в Telegram. "
-        "Больше никто не сможет незаметно удалить сообщение, спрятать контент или потерять важное.\n\n"
-        "<b>Что я умею:</b>\n"
-        "• <b>Одноразовые медиа:</b> фото и видео с таймером просмотра [View Once].\n"
-        "• <b>Удалённые сообщения:</b> текст, фото, видео, голосовые, кружки, документы и стикеры.\n"
-        "• <b>Изменения в чате:</b> показываю исходный текст до правки.\n"
-        "• <b>Мут чатов:</b> .mute и .unmute для мгновенной очистки сообщений.\n"
-        "• <b>Игры:</b> крестики-нолики и КНБ прямо в чате.\n"
-        "• <b>Шепот:</b> inline-сообщения, видимые только адресату и отправителю.\n"
-        "• <b>.spam:</b> .spam (кол-во) (текст) или (текст,текст).\n\n"
+        "Больше никто не сможет незаметно удалить сообщение, спрятать контент или снести переписку.\n\n"
+        "<b>📦 Выгрузка и дамп диалогов (HTML-архив):</b>\n"
+        "• <code>/dump</code> — интерактивное меню выбора диалога (по 5 человек на страницу с кнопками). "
+        "Скачивает переписку в точном дизайне <b>Telegram Desktop</b> со всеми фото, кликабельным зумом и плеером голосовых.\n"
+        "• <code>/dump &lt;chat_id&gt;</code> — прямая выгрузка конкретного чата по его ID.\n"
+        "• <code>.dump</code> <i>(или <code>.dump 50</code>)</i> — скрытая команда в бизнес-чате. "
+        "Мгновенно и бесследно удаляется из диалога (собеседник её не увидит), а готовый файл присылает вам в ЛС бота.\n"
+        "• 🚨 <b>Аварийный автодамп:</b> при массовом удалении сообщений собеседником бот автоматически сформирует и пришлёт полный архив.\n\n"
+        "<b>⚡ Другие возможности:</b>\n"
+        "• <b>Одноразовые медиа:</b> пересылка фото и видео с таймером [View Once] при ответе на них точкой.\n"
+        "• <b>Удалённые сообщения:</b> текст, фото, видео, голосовые, кружки, документы и стикеры дублируются вам в ЛС.\n"
+        "• <b>Изменения в чате:</b> бот показывает исходный текст сообщения до редактирования.\n"
+        "• <b>Мут чатов:</b> <code>.mute</code> и <code>.unmute</code> для автоудаления сообщений (команда также бесследно удаляется).\n"
+        "• <b>Игры и шепот:</b> крестики-нолики, КНБ и приватные inline-сообщения.\n"
+        "• <b>.spam:</b> <code>.spam (кол-во) (текст)</code> для быстрой отправки сообщений.\n\n"
         "<blockquote>🔒 <b>Open-Source:</b> Проект полностью открытый. "
         "Весь код прозрачен, а твои данные остаются в безопасности.</blockquote>",
         reply_markup=start_keyboard()
@@ -1237,6 +1244,27 @@ async def on_dump_page_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 
+@dp.callback_query(F.data == "dump:open_menu")
+async def on_dump_open_menu_callback(callback: types.CallbackQuery):
+    if not callback.from_user or not await is_owner_user(callback.from_user.id):
+        await callback.answer("⛔ Недоступно", show_alert=True)
+        return
+
+    total_chats = await db.get_business_chats_count()
+    if total_chats == 0:
+        await callback.answer("ℹ️ В базе пока нет сохраненных бизнес-диалогов.", show_alert=True)
+        return
+
+    chats = await db.get_business_chats_page(limit=5, offset=0)
+    markup = build_dump_keyboard(chats, page=0, total_chats=total_chats, page_size=5)
+    await callback.message.answer(
+        "📁 <b>Выберите собеседника для выгрузки дампа:</b>\n\n"
+        "<i>Нажмите на нужного человека ниже, чтобы получить полный HTML-архив переписки со всеми медиа и удалёнными сообщениями:</i>",
+        reply_markup=markup
+    )
+    await callback.answer()
+
+
 @dp.callback_query(F.data == "dump:noop")
 async def on_dump_noop_callback(callback: types.CallbackQuery):
     await callback.answer()
@@ -1368,14 +1396,30 @@ async def main():
 
     await db.init_db()
 
+    # Устанавливаем список команд в меню бота
+    try:
+        from aiogram.types import BotCommand
+        await bot.set_my_commands([
+            BotCommand(command="start", description="Главное меню и возможности"),
+            BotCommand(command="dump", description="Выгрузить диалог в HTML-дамп"),
+            BotCommand(command="stats", description="Статистика сохранённых данных"),
+        ])
+    except Exception as e:
+        logger.warning(f"Не удалось установить команды бота: {e}")
+
     # Обновляем описание бота со ссылкой на репозиторий (видно в профиле бота)
     try:
         await bot.set_my_description(
-            f"{BOT_NAME} — сохраняет удалённые сообщения и медиа с таймером "
-            f"в твоём Telegram Business.\n\nИсходный код: {REPO_URL}"
+            f"{BOT_NAME} — сохраняет удалённые сообщения, одноразовые фото/видео "
+            f"и экспортирует диалоги в Telegram Business.\n\n"
+            f"📦 Команды дампа:\n"
+            f"• /dump — выбор чата по кнопкам (по 5 человек) и экспорт HTML\n"
+            f"• .dump — скрытая выгрузка диалога прямо из переписки\n"
+            f"• Аварийный автодамп при сносе сообщений\n\n"
+            f"Исходный код: {REPO_URL}"
         )
         await bot.set_my_short_description(
-            f"{BOT_NAME} — ничего не скроется. Исходники: {REPO_URL}"
+            f"{BOT_NAME} — перехват удалённых сообщений, одноразок и экспорт чатов. Исходники: {REPO_URL}"
         )
         logger.info("Описание бота обновлено (set_my_description)")
     except Exception as e:
