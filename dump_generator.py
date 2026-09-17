@@ -1,5 +1,6 @@
 import html
 import base64
+import asyncio
 import logging
 from io import BytesIO
 from datetime import datetime
@@ -13,13 +14,11 @@ logger = logging.getLogger("iSeeAllDumpGenerator")
 async def get_avatar_base64(bot: Bot, target_id: int) -> str | None:
     """Пытается скачать аватарку пользователя и вернуть её в формате base64."""
     try:
-        # Сначала пробуем через get_user_profile_photos
         photos = await bot.get_user_profile_photos(user_id=target_id, limit=1)
         file_id = None
         if photos and photos.total_count > 0:
             file_id = photos.photos[0][0].file_id
 
-        # Если не вышло, пробуем через get_chat
         if not file_id:
             chat = await bot.get_chat(target_id)
             if chat.photo:
@@ -34,6 +33,43 @@ async def get_avatar_base64(bot: Bot, target_id: int) -> str | None:
     except Exception as exc:
         logger.warning(f"Не удалось получить аватарку для {target_id}: {exc}")
     return None
+
+
+async def download_media_base64(bot: Bot, file_id: str, media_type: str | None) -> tuple[str, str] | None:
+    """
+    Скачивает медиафайл по file_id и возвращает (base64_content, mime_type).
+    Ограничение по размеру: до 15 МБ, чтобы дамп генерировался быстро.
+    """
+    if not file_id:
+        return None
+    try:
+        file_info = await bot.get_file(file_id)
+        if not file_info.file_path:
+            return None
+
+        # Проверка размера (до 15 МБ)
+        if file_info.file_size and file_info.file_size > 15 * 1024 * 1024:
+            logger.warning(f"Медиа {file_id} слишком большое ({file_info.file_size} байт), пропуск")
+            return None
+
+        dest = BytesIO()
+        await bot.download_file(file_info.file_path, destination=dest)
+        b64_str = base64.b64encode(dest.getvalue()).decode("utf-8")
+
+        # Определение MIME-типа
+        if media_type in ("voice", "audio"):
+            mime = "audio/ogg"
+        elif media_type == "photo":
+            mime = "image/jpeg"
+        elif media_type in ("video", "video_note", "animation"):
+            mime = "video/mp4"
+        else:
+            mime = "application/octet-stream"
+
+        return b64_str, mime
+    except Exception as exc:
+        logger.warning(f"Не удалось скачать медиа {file_id} ({media_type}): {exc}")
+        return None
 
 
 def get_initials(name: str) -> str:
@@ -55,11 +91,14 @@ def generate_chat_dump_html(
     owner_username: str | None,
     owner_id: int,
     owner_avatar_b64: str | None,
+    media_map: dict[str, tuple[str, str]] | None = None,
     is_chat_cleared: bool = False,
 ) -> str:
     """
-    Генерирует автономный HTML-архив в точном стиле Telegram Desktop Light Theme (1-в-1 по скриншоту).
+    Генерирует автономный HTML-архив в точной стилистике Telegram Desktop Light Theme
+    со встроенными воспроизводимыми голосовыми сообщениями и фотографиями.
     """
+    media_map = media_map or {}
     safe_target_name = html.escape(interlocutor_name or f"Пользователь {interlocutor_id}")
     safe_target_user = f"@{interlocutor_username}" if interlocutor_username else f"ID: {interlocutor_id}"
     safe_owner_name = html.escape(owner_name or f"ID {owner_id}")
@@ -123,6 +162,7 @@ def generate_chat_dump_html(
         is_deleted = bool(msg["is_deleted"]) if "is_deleted" in msg.keys() else False
         old_text = msg["old_text"] if "old_text" in msg.keys() else None
         media_type = msg["media_type"]
+        file_id = msg["file_id"]
         text = msg["text"]
         caption = msg["caption"]
 
@@ -158,47 +198,92 @@ def generate_chat_dump_html(
                 </div>
             """
 
-        # Content rendering
         content_parts = []
         if badges_html:
             content_parts.append("".join(badges_html))
 
-        # Media card rendering
-        if media_type == "voice":
-            content_parts.append("""
-                <div class="voice-card">
-                    <div class="play-btn"><svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></div>
-                    <div class="voice-meta">
-                        <div class="waveform">
-                            <span class="wave-bar" style="height: 6px;"></span>
-                            <span class="wave-bar" style="height: 12px;"></span>
-                            <span class="wave-bar" style="height: 16px;"></span>
-                            <span class="wave-bar" style="height: 8px;"></span>
-                            <span class="wave-bar" style="height: 14px;"></span>
-                            <span class="wave-bar" style="height: 18px;"></span>
-                            <span class="wave-bar" style="height: 10px;"></span>
-                            <span class="wave-bar" style="height: 15px;"></span>
-                            <span class="wave-bar" style="height: 7px;"></span>
-                            <span class="wave-bar" style="height: 13px;"></span>
+        # Real Media Rendering
+        media_data = media_map.get(file_id) if file_id else None
+
+        if media_type == "voice" or media_type == "audio":
+            if media_data:
+                b64_val, mime_val = media_data
+                audio_id = f"aud_{msg['msg_id']}"
+                btn_bg = "#4fae4e" if is_out else "#2481cc"
+                content_parts.append(f"""
+                    <div class="voice-card">
+                        <div class="play-btn" style="background:{btn_bg};" onclick="togglePlay(this, '{audio_id}')">
+                            <svg class="icon-play" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                            <svg class="icon-pause" style="display:none;" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" fill="white"></rect><rect x="14" y="4" width="4" height="16" fill="white"></rect></svg>
                         </div>
-                        <div class="voice-dur">Голосовое сообщение</div>
+                        <audio id="{audio_id}" src="data:{mime_val};base64,{b64_val}" preload="metadata" onended="onAudioEnded(this)"></audio>
+                        <div class="voice-meta">
+                            <div class="waveform" id="wave_{audio_id}">
+                                <span class="wave-bar" style="height: 6px;"></span>
+                                <span class="wave-bar" style="height: 12px;"></span>
+                                <span class="wave-bar" style="height: 16px;"></span>
+                                <span class="wave-bar" style="height: 8px;"></span>
+                                <span class="wave-bar" style="height: 14px;"></span>
+                                <span class="wave-bar" style="height: 18px;"></span>
+                                <span class="wave-bar" style="height: 10px;"></span>
+                                <span class="wave-bar" style="height: 15px;"></span>
+                                <span class="wave-bar" style="height: 7px;"></span>
+                                <span class="wave-bar" style="height: 13px;"></span>
+                                <span class="wave-bar" style="height: 5px;"></span>
+                                <span class="wave-bar" style="height: 14px;"></span>
+                                <span class="wave-bar" style="height: 11px;"></span>
+                                <span class="wave-bar" style="height: 16px;"></span>
+                            </div>
+                            <div class="voice-dur" id="dur_{audio_id}">▶ Нажмите чтобы слушать голосовое</div>
+                        </div>
                     </div>
-                </div>
-            """)
+                """)
+            else:
+                content_parts.append("""
+                    <div class="voice-card">
+                        <div class="play-btn"><svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></div>
+                        <div class="voice-meta"><div class="voice-dur">🎤 Голосовое сообщение</div></div>
+                    </div>
+                """)
         elif media_type == "photo":
-            content_parts.append("""
-                <div style="display:flex;align-items:center;gap:8px;padding:4px 0;">
-                    <div style="font-size:22px;">📸</div>
-                    <div><b>Фотография</b></div>
-                </div>
-            """)
+            if media_data:
+                b64_val, mime_val = media_data
+                content_parts.append(f"""
+                    <div class="photo-box">
+                        <img class="tg-photo-img" src="data:{mime_val};base64,{b64_val}" alt="Фотография" onclick="openModal(this.src)">
+                    </div>
+                """)
+            else:
+                content_parts.append("""
+                    <div style="display:flex;align-items:center;gap:8px;padding:4px 0;">
+                        <div style="font-size:22px;">📸</div>
+                        <div><b>Фотография</b></div>
+                    </div>
+                """)
+        elif media_type in ("video", "video_note", "animation"):
+            if media_data:
+                b64_val, mime_val = media_data
+                border_style = "border-radius:50%;width:220px;height:220px;object-fit:cover;" if media_type == "video_note" else "border-radius:8px;max-width:100%;max-height:360px;"
+                content_parts.append(f"""
+                    <div style="margin:4px 0;">
+                        <video controls style="{border_style}" src="data:{mime_val};base64,{b64_val}"></video>
+                    </div>
+                """)
+            else:
+                content_parts.append("""
+                    <div style="display:flex;align-items:center;gap:8px;padding:4px 0;">
+                        <div style="font-size:22px;">🎬</div>
+                        <div><b>Видео / Кружочек</b></div>
+                    </div>
+                """)
         elif media_type == "document":
-            content_parts.append("""
+            doc_name = html.escape(caption or "Документ")
+            content_parts.append(f"""
                 <div class="doc-card">
                     <div class="doc-icon-btn"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"></path></svg></div>
                     <div class="doc-info">
-                        <span class="doc-name">Документ / Файл</span>
-                        <span class="doc-size">Вложение</span>
+                        <span class="doc-name">{doc_name}</span>
+                        <span class="doc-size">Файл</span>
                     </div>
                 </div>
             """)
@@ -211,7 +296,7 @@ def generate_chat_dump_html(
         elif diff_html:
             content_parts.append(diff_html)
 
-        if caption:
+        if caption and media_type != "document":
             content_parts.append(f'<div style="margin-top:4px;">{html.escape(caption)}</div>')
 
         # Checkmarks for out
@@ -554,6 +639,7 @@ def generate_chat_dump_html(
             font-weight: 500;
         }}
 
+        /* Real Voice Player */
         .voice-card {{
             display: flex;
             align-items: center;
@@ -564,18 +650,22 @@ def generate_chat_dump_html(
             width: 44px;
             height: 44px;
             border-radius: 50%;
-            background: #4fae4e;
             display: flex;
             align-items: center;
             justify-content: center;
             color: white;
+            cursor: pointer;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.15);
             flex-shrink: 0;
+            transition: transform 0.1s, opacity 0.1s;
+        }}
+        .play-btn:active {{
+            transform: scale(0.95);
         }}
         .play-btn svg {{
             width: 18px;
             height: 18px;
             fill: white;
-            margin-left: 2px;
         }}
         .voice-meta {{
             display: flex;
@@ -592,10 +682,41 @@ def generate_chat_dump_html(
             width: 3px;
             background: #99c997;
             border-radius: 2px;
+            transition: height 0.1s;
+        }}
+        .playing .wave-bar {{
+            animation: waveBounce 0.6s infinite ease-in-out alternate;
+        }}
+        .playing .wave-bar:nth-child(2n) {{ animation-delay: 0.15s; }}
+        .playing .wave-bar:nth-child(3n) {{ animation-delay: 0.3s; }}
+        @keyframes waveBounce {{
+            from {{ height: 5px; }}
+            to {{ height: 18px; }}
         }}
         .voice-dur {{
             font-size: 12px;
             color: #707579;
+        }}
+
+        /* Real Photo Box */
+        .photo-box {{
+            margin: 4px 0 6px;
+            border-radius: 8px;
+            overflow: hidden;
+            max-width: 420px;
+        }}
+        .tg-photo-img {{
+            width: 100%;
+            height: auto;
+            max-height: 400px;
+            object-fit: cover;
+            border-radius: 8px;
+            display: block;
+            cursor: pointer;
+            transition: opacity 0.15s;
+        }}
+        .tg-photo-img:hover {{
+            opacity: 0.94;
         }}
 
         .doc-card {{
@@ -614,6 +735,7 @@ def generate_chat_dump_html(
             justify-content: center;
             color: white;
             flex-shrink: 0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.15);
         }}
         .doc-icon-btn svg {{
             width: 20px;
@@ -671,6 +793,24 @@ def generate_chat_dump_html(
             font-size: 11px;
             font-weight: 500;
         }}
+
+        /* Fullscreen Photo Modal */
+        #imgModal {{
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.88);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }}
+        #imgModal img {{
+            max-width: 90vw;
+            max-height: 90vh;
+            border-radius: 8px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+        }}
     </style>
 </head>
 <body>
@@ -719,6 +859,11 @@ def generate_chat_dump_html(
         </div>
     </div>
 
+    <!-- Image Modal -->
+    <div id="imgModal" onclick="closeModal()">
+        <img id="modalImg" src="" alt="Full view">
+    </div>
+
     <script>
         function doSearch() {{
             const q = document.getElementById("searchInput").value.toLowerCase().trim();
@@ -727,6 +872,75 @@ def generate_chat_dump_html(
                 const txt = r.getAttribute("data-text") || "";
                 r.style.display = (!q || txt.includes(q)) ? "flex" : "none";
             }});
+        }}
+
+        function togglePlay(btn, audioId) {{
+            const audio = document.getElementById(audioId);
+            const playIcon = btn.querySelector(".icon-play");
+            const pauseIcon = btn.querySelector(".icon-pause");
+            const wave = document.getElementById("wave_" + audioId);
+            const dur = document.getElementById("dur_" + audioId);
+
+            if (audio.paused) {{
+                // Pause all other playing audios
+                document.querySelectorAll("audio").forEach(a => {{
+                    if (a !== audio && !a.paused) {{
+                        a.pause();
+                        const pBtn = a.parentElement.querySelector(".play-btn");
+                        if (pBtn) {{
+                            pBtn.querySelector(".icon-play").style.display = "block";
+                            pBtn.querySelector(".icon-pause").style.display = "none";
+                        }}
+                        const pWave = document.getElementById("wave_" + a.id);
+                        if (pWave) pWave.classList.remove("playing");
+                    }}
+                }});
+
+                audio.play();
+                playIcon.style.display = "none";
+                pauseIcon.style.display = "block";
+                if (wave) wave.classList.add("playing");
+                if (dur) dur.innerText = "Воспроизведение...";
+
+                audio.ontimeupdate = function() {{
+                    if (dur && audio.duration) {{
+                        const cur = Math.floor(audio.currentTime);
+                        const tot = Math.floor(audio.duration);
+                        const curM = String(Math.floor(cur / 60)).padStart(2, "0");
+                        const curS = String(cur % 60).padStart(2, "0");
+                        const totM = String(Math.floor(tot / 60)).padStart(2, "0");
+                        const totS = String(tot % 60).padStart(2, "0");
+                        dur.innerText = curM + ":" + curS + " / " + totM + ":" + totS;
+                    }}
+                }};
+            }} else {{
+                audio.pause();
+                playIcon.style.display = "block";
+                pauseIcon.style.display = "none";
+                if (wave) wave.classList.remove("playing");
+                if (dur) dur.innerText = "Пауза";
+            }}
+        }}
+
+        function onAudioEnded(audio) {{
+            const btn = audio.parentElement.querySelector(".play-btn");
+            if (btn) {{
+                btn.querySelector(".icon-play").style.display = "block";
+                btn.querySelector(".icon-pause").style.display = "none";
+            }}
+            const wave = document.getElementById("wave_" + audio.id);
+            if (wave) wave.classList.remove("playing");
+            const dur = document.getElementById("dur_" + audio.id);
+            if (dur) dur.innerText = "Воспроизведение завершено";
+        }}
+
+        function openModal(src) {{
+            document.getElementById("modalImg").src = src;
+            document.getElementById("imgModal").style.display = "flex";
+        }}
+
+        function closeModal() {{
+            document.getElementById("imgModal").style.display = "none";
         }}
     </script>
 </body>
@@ -749,7 +963,7 @@ async def execute_and_send_dump(
             owner_chat_id,
             f"ℹ️ В базе данных пока нет сохраненных сообщений для чата <code>{chat_id}</code>."
         )
-        return
+        return False
 
     # Получаем данные собеседника
     target_name = None
@@ -774,6 +988,24 @@ async def execute_and_send_dump(
     interlocutor_b64 = await get_avatar_base64(bot, chat_id)
     owner_b64 = await get_avatar_base64(bot, owner_id)
 
+    # Скачиваем реальные медиафайлы сообщений (фотографии, голосовые)
+    media_map = {}
+    media_tasks = []
+    task_keys = []
+
+    for m in messages:
+        fid = m["file_id"]
+        mtype = m["media_type"]
+        if fid and mtype in ("voice", "audio", "photo", "video", "video_note") and fid not in media_map:
+            media_tasks.append(download_media_base64(bot, fid, mtype))
+            task_keys.append(fid)
+
+    if media_tasks:
+        results = await asyncio.gather(*media_tasks, return_exceptions=True)
+        for fid, res in zip(task_keys, results):
+            if res and not isinstance(res, Exception):
+                media_map[fid] = res
+
     # Получаем данные владельца
     owner_name = "Владелец"
     owner_username = None
@@ -796,6 +1028,7 @@ async def execute_and_send_dump(
         owner_username=owner_username,
         owner_id=owner_id,
         owner_avatar_b64=owner_b64,
+        media_map=media_map,
         is_chat_cleared=is_chat_cleared,
     )
 
@@ -805,10 +1038,12 @@ async def execute_and_send_dump(
         f"{caption_title}"
         f"👤 <b>Собеседник:</b> {target_name} (<code>{chat_id}</code>)\n"
         f"💬 <b>Сообщений в архиве:</b> {len(messages)}\n"
+        f"🎙 <b>Медиа встроено:</b> {len(media_map)} шт. (голос, фото)\n"
         f"🕒 <b>Дата выгрузки:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
-        f"<i>Откройте прикрепленный HTML-файл на телефоне или ПК для просмотра.</i>"
+        f"<i>Откройте файл на телефоне или ПК — вы сможете прослушать голосовые и увидеть фото прямо в переписке!</i>"
     )
 
     doc = BufferedInputFile(html_data.encode("utf-8"), filename=f"chat_dump_{clean_name}.html")
     await bot.send_document(owner_chat_id, document=doc, caption=caption)
-    logger.info(f"✅ Дамп чата {chat_id} успешно сформирован и отправлен владельцу ({owner_chat_id})")
+    logger.info(f"✅ Дамп чата {chat_id} успешно сформирован с медиа и отправлен владельцу ({owner_chat_id})")
+    return True

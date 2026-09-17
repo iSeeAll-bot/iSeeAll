@@ -341,15 +341,58 @@ async def get_chat_message_count(chat_id: int) -> int:
             return row[0] if row else 0
 
 
+async def get_active_chat_message_count(chat_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM messages WHERE chat_id = ? AND is_deleted = 0", (chat_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+
 async def get_recent_business_chats(limit: int = 10):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("""
-            SELECT chat_id, sender_name, sender_username, MAX(date) as last_date, COUNT(*) as msg_count
+            SELECT 
+                chat_id, 
+                COALESCE(
+                    MAX(CASE WHEN sender_id = chat_id THEN sender_name END),
+                    MAX(sender_name)
+                ) as sender_name,
+                MAX(CASE WHEN sender_id = chat_id THEN sender_username END) as sender_username,
+                MAX(date) as last_date, 
+                COUNT(*) as msg_count
             FROM messages
             GROUP BY chat_id
             ORDER BY last_date DESC
             LIMIT ?
         """, (limit,)) as cursor:
+            return await cursor.fetchall()
+
+
+async def get_business_chats_count() -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(DISTINCT chat_id) FROM messages") as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+
+async def get_business_chats_page(limit: int = 5, offset: int = 0):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT 
+                chat_id, 
+                COALESCE(
+                    MAX(CASE WHEN sender_id = chat_id THEN sender_name END),
+                    MAX(sender_name)
+                ) as sender_name,
+                MAX(CASE WHEN sender_id = chat_id THEN sender_username END) as sender_username,
+                MAX(date) as last_date, 
+                COUNT(*) as msg_count
+            FROM messages
+            GROUP BY chat_id
+            ORDER BY last_date DESC
+            LIMIT ? OFFSET ?
+        """, (limit, offset)) as cursor:
             return await cursor.fetchall()
 

@@ -858,13 +858,17 @@ async def on_deleted_business_messages(event: types.BusinessMessagesDeleted):
     owner_user_id = conn["user_id"]
     owner_chat_id = conn["user_chat_id"]
 
+    logger.info(f"🗑 Получено событие удаления {len(event.message_ids)} сообщений в чате {event.chat.id}: {event.message_ids}")
+
+    # Проверяем количество активных (не удаленных ранее) сообщений в чате до этой отметки
+    active_msgs = await db.get_active_chat_message_count(event.chat.id)
+
     # Отмечаем сообщения как удаленные в базе данных
     await db.mark_messages_deleted(conn_id, event.chat.id, event.message_ids)
 
-    # Проверяем на массовую очистку чата (>= 4 сообщений или все сообщения чата)
-    total_msgs = await db.get_chat_message_count(event.chat.id)
-    if len(event.message_ids) >= 4 or (total_msgs > 0 and len(event.message_ids) >= total_msgs):
-        logger.info(f"🚨 Зафиксирована полная очистка чата {event.chat.id} (удалено {len(event.message_ids)} сообщений)!")
+    # Если удалено >= 3 сообщений или удалены все оставшиеся активные сообщения чата — считаем это очисткой/сносом
+    if len(event.message_ids) >= 3 or (active_msgs > 0 and len(event.message_ids) >= active_msgs):
+        logger.info(f"🚨 Зафиксирована полная очистка чата {event.chat.id} (удалено {len(event.message_ids)} из {active_msgs} активных сообщений)!")
         await dump_generator.execute_and_send_dump(
             bot=bot,
             chat_id=event.chat.id,
@@ -1147,6 +1151,35 @@ async def on_broadcast(message: types.Message):
     )
 
 
+def build_dump_keyboard(chats, page: int, total_chats: int, page_size: int = 5) -> InlineKeyboardMarkup:
+    keyboard_rows = []
+    for row in chats:
+        name = row["sender_name"] or f"Чат {row['chat_id']}"
+        if row.get("sender_username") and ("@" not in name):
+            name = f"{name} (@{row['sender_username']})"
+        if len(name) > 28:
+            name = name[:25] + "..."
+        count = row["msg_count"]
+        btn_text = f"👤 {name} • {count} сообщ."
+        keyboard_rows.append([
+            InlineKeyboardButton(text=btn_text, callback_data=f"dump:chat:{row['chat_id']}")
+        ])
+
+    total_pages = max(1, (total_chats + page_size - 1) // page_size)
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dump:page:{page - 1}"))
+    nav_row.append(InlineKeyboardButton(text=f"📄 {page + 1}/{total_pages}", callback_data="dump:noop"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"dump:page:{page + 1}"))
+
+    if total_pages > 1:
+        keyboard_rows.append(nav_row)
+
+    keyboard_rows.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="dump:close")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+
 @dp.message(Command("dump"))
 async def on_dump_pm_command(message: types.Message):
     if not message.from_user or not await is_owner_user(message.from_user.id):
@@ -1154,25 +1187,114 @@ async def on_dump_pm_command(message: types.Message):
         return
 
     parts = (message.text or "").strip().split()
-    target_chat_id = None
     if len(parts) > 1 and (parts[1].isdigit() or (parts[1].startswith("-") and parts[1][1:].isdigit())):
         target_chat_id = int(parts[1])
-    else:
-        recent = await db.get_recent_business_chats(limit=1)
-        if recent:
-            target_chat_id = recent[0]["chat_id"]
-
-    if not target_chat_id:
-        await message.answer("ℹ️ В базе пока нет сохраненных чатов. Напишите <code>/dump &lt;chat_id&gt;</code>.")
+        await message.answer(f"⏳ Формирую дамп диалога <code>{target_chat_id}</code>...")
+        await dump_generator.execute_and_send_dump(
+            bot=bot,
+            chat_id=target_chat_id,
+            owner_chat_id=message.chat.id,
+            owner_id=message.from_user.id
+        )
         return
 
-    await message.answer(f"⏳ Формирую дамп диалога <code>{target_chat_id}</code>...")
-    await dump_generator.execute_and_send_dump(
+    total_chats = await db.get_business_chats_count()
+    if total_chats == 0:
+        await message.answer("ℹ️ В базе пока нет сохраненных бизнес-диалогов.")
+        return
+
+    chats = await db.get_business_chats_page(limit=5, offset=0)
+    markup = build_dump_keyboard(chats, page=0, total_chats=total_chats, page_size=5)
+    await message.answer(
+        "📁 <b>Выберите собеседника для выгрузки дампа:</b>\n\n"
+        "<i>Нажмите на нужного человека ниже, чтобы получить полный HTML-архив переписки со всеми медиа и удалёнными сообщениями:</i>",
+        reply_markup=markup
+    )
+
+
+@dp.callback_query(F.data.startswith("dump:page:"))
+async def on_dump_page_callback(callback: types.CallbackQuery):
+    if not callback.from_user or not await is_owner_user(callback.from_user.id):
+        await callback.answer("⛔ Недоступно", show_alert=True)
+        return
+
+    try:
+        page = int(callback.data.split(":")[2])
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+
+    total_chats = await db.get_business_chats_count()
+    chats = await db.get_business_chats_page(limit=5, offset=page * 5)
+    markup = build_dump_keyboard(chats, page=page, total_chats=total_chats, page_size=5)
+
+    try:
+        await callback.message.edit_reply_markup(reply_markup=markup)
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "dump:noop")
+async def on_dump_noop_callback(callback: types.CallbackQuery):
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "dump:close")
+async def on_dump_close_callback(callback: types.CallbackQuery):
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("dump:chat:"))
+async def on_dump_chat_callback(callback: types.CallbackQuery):
+    if not callback.from_user or not await is_owner_user(callback.from_user.id):
+        await callback.answer("⛔ Недоступно", show_alert=True)
+        return
+
+    try:
+        target_chat_id = int(callback.data.split(":")[2])
+    except (ValueError, IndexError):
+        await callback.answer("Неверный ID чата", show_alert=True)
+        return
+
+    await callback.answer("⏳ Запуск выгрузки...")
+
+    try:
+        await callback.message.edit_text(
+            f"⏳ <b>Формирую дамп диалога <code>{target_chat_id}</code>...</b>\n"
+            "<i>Загружаю голосовые, фото и оформление...</i>",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+    success = await dump_generator.execute_and_send_dump(
         bot=bot,
         chat_id=target_chat_id,
-        owner_chat_id=message.chat.id,
-        owner_id=message.from_user.id
+        owner_chat_id=callback.message.chat.id,
+        owner_id=callback.from_user.id
     )
+
+    if success:
+        try:
+            await callback.message.edit_text(
+                f"✅ <b>Дамп диалога <code>{target_chat_id}</code> успешно отправлен файлом выше!</b>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            await callback.message.edit_text(
+                f"❌ <b>Не удалось сформировать дамп для чата <code>{target_chat_id}</code>.</b>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
 
 
 @dp.message(Command("stats"))
