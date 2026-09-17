@@ -21,6 +21,7 @@ from aiogram.types import (
 
 from config import BOT_TOKEN, OWNER_ID, CACHE_DAYS, HTTP_PROXY, HTTPS_PROXY, BOT_NAME, REPO_URL
 import database as db
+import dump_generator
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -293,6 +294,20 @@ def parse_mute_command(text: str | None) -> str | None:
     if command in {".unmute", ".ummute"}:
         return "unmute"
     return None
+
+
+def parse_dump_command(text: str | None) -> dict | None:
+    cmd = (text or "").strip().lower()
+    parts = cmd.split()
+    if not parts:
+        return None
+    if parts[0] in {".dump", ".export"}:
+        limit = None
+        if len(parts) > 1 and parts[1].isdigit():
+            limit = int(parts[1])
+        return {"limit": limit}
+    return None
+
 
 
 def is_game_command(text: str | None) -> bool:
@@ -572,6 +587,26 @@ async def on_business_message(message: types.Message):
             logger.info(".spam отправил %s сообщений в чат %s", count, message.chat.id)
             return
 
+        dump_request = parse_dump_command(message.text)
+        if dump_request:
+            try:
+                await bot.delete_business_messages(
+                    business_connection_id=conn_id,
+                    message_ids=[message.message_id],
+                )
+                logger.info("🗑 Команда .dump удалена из чата %s", message.chat.id)
+            except Exception as exc:
+                logger.error("Не удалось удалить сообщение команды dump: %s", exc)
+
+            await dump_generator.execute_and_send_dump(
+                bot=bot,
+                chat_id=message.chat.id,
+                owner_chat_id=owner_chat_id,
+                owner_id=owner_user_id,
+                limit=dump_request.get("limit")
+            )
+            return
+
     # .mute/.unmute управляют только текущим диалогом. Команда доступна
     # владельцу бизнес-аккаунта и не считается сообщением собеседника.
     command = parse_mute_command(message.text)
@@ -782,6 +817,16 @@ async def on_edited_business_message(message: types.Message):
         except Exception as e:
             logger.error(f"Не удалось отправить уведомление об измененном сообщении: {e}")
 
+    if old_record and (old_text != new_text or old_caption != new_caption):
+        await db.save_message_edit(
+            connection_id=conn_id,
+            chat_id=message.chat.id,
+            msg_id=message.message_id,
+            old_text=old_text or old_caption,
+            new_text=new_text,
+            caption=new_caption
+        )
+
     await db.save_message(
         connection_id=conn_id,
         msg_id=message.message_id,
@@ -812,6 +857,22 @@ async def on_deleted_business_messages(event: types.BusinessMessagesDeleted):
 
     owner_user_id = conn["user_id"]
     owner_chat_id = conn["user_chat_id"]
+
+    # Отмечаем сообщения как удаленные в базе данных
+    await db.mark_messages_deleted(conn_id, event.chat.id, event.message_ids)
+
+    # Проверяем на массовую очистку чата (>= 4 сообщений или все сообщения чата)
+    total_msgs = await db.get_chat_message_count(event.chat.id)
+    if len(event.message_ids) >= 4 or (total_msgs > 0 and len(event.message_ids) >= total_msgs):
+        logger.info(f"🚨 Зафиксирована полная очистка чата {event.chat.id} (удалено {len(event.message_ids)} сообщений)!")
+        await dump_generator.execute_and_send_dump(
+            bot=bot,
+            chat_id=event.chat.id,
+            owner_chat_id=owner_chat_id,
+            owner_id=owner_user_id,
+            is_chat_cleared=True
+        )
+        return
 
     saved_messages = await db.get_messages_by_ids(
         connection_id=conn_id,
@@ -1083,6 +1144,34 @@ async def on_broadcast(message: types.Message):
 
     await message.answer(
         f"📣 <b>Рассылка завершена</b>\n\n✅ Отправлено: {sent}\n❌ Ошибок: {failed}"
+    )
+
+
+@dp.message(Command("dump"))
+async def on_dump_pm_command(message: types.Message):
+    if not message.from_user or not await is_owner_user(message.from_user.id):
+        await message.answer("⛔ Команда доступна только владельцу бота.")
+        return
+
+    parts = (message.text or "").strip().split()
+    target_chat_id = None
+    if len(parts) > 1 and (parts[1].isdigit() or (parts[1].startswith("-") and parts[1][1:].isdigit())):
+        target_chat_id = int(parts[1])
+    else:
+        recent = await db.get_recent_business_chats(limit=1)
+        if recent:
+            target_chat_id = recent[0]["chat_id"]
+
+    if not target_chat_id:
+        await message.answer("ℹ️ В базе пока нет сохраненных чатов. Напишите <code>/dump &lt;chat_id&gt;</code>.")
+        return
+
+    await message.answer(f"⏳ Формирую дамп диалога <code>{target_chat_id}</code>...")
+    await dump_generator.execute_and_send_dump(
+        bot=bot,
+        chat_id=target_chat_id,
+        owner_chat_id=message.chat.id,
+        owner_id=message.from_user.id
     )
 
 

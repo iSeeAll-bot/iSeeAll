@@ -64,6 +64,19 @@ async def init_db():
         """)
         await db.commit()
 
+        # Проверка и добавление колонок для истории и дампа
+        async with db.execute("PRAGMA table_info(messages)") as cursor:
+            cols = [row[1] for row in await cursor.fetchall()]
+        if "is_deleted" not in cols:
+            await db.execute("ALTER TABLE messages ADD COLUMN is_deleted BOOLEAN DEFAULT 0")
+        if "old_text" not in cols:
+            await db.execute("ALTER TABLE messages ADD COLUMN old_text TEXT")
+        if "edit_date" not in cols:
+            await db.execute("ALTER TABLE messages ADD COLUMN edit_date TIMESTAMP")
+        if "delete_date" not in cols:
+            await db.execute("ALTER TABLE messages ADD COLUMN delete_date TIMESTAMP")
+        await db.commit()
+
 
 async def get_setting(key: str):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -285,3 +298,58 @@ async def cleanup_old_messages(days: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM messages WHERE date < ?", (cutoff,))
         await db.commit()
+
+
+async def mark_messages_deleted(connection_id: str, chat_id: int, msg_ids: list[int]):
+    if not msg_ids:
+        return
+    placeholders = ",".join("?" for _ in msg_ids)
+    query = f"UPDATE messages SET is_deleted = 1, delete_date = ? WHERE connection_id = ? AND chat_id = ? AND msg_id IN ({placeholders})"
+    params = [datetime.now().isoformat(), connection_id, chat_id] + msg_ids
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(query, params)
+        await db.commit()
+
+
+async def save_message_edit(connection_id: str, chat_id: int, msg_id: int, old_text: str | None, new_text: str | None, caption: str | None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE messages 
+            SET old_text = COALESCE(old_text, ?), text = ?, caption = ?, edit_date = ?
+            WHERE connection_id = ? AND chat_id = ? AND msg_id = ?
+        """, (old_text, new_text, caption, datetime.now().isoformat(), connection_id, chat_id, msg_id))
+        await db.commit()
+
+
+async def get_all_chat_messages(chat_id: int, limit: int | None = None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if limit:
+            query = "SELECT * FROM (SELECT * FROM messages WHERE chat_id = ? ORDER BY msg_id DESC LIMIT ?) ORDER BY msg_id ASC"
+            params = (chat_id, limit)
+        else:
+            query = "SELECT * FROM messages WHERE chat_id = ? ORDER BY msg_id ASC"
+            params = (chat_id,)
+        async with db.execute(query, params) as cursor:
+            return await cursor.fetchall()
+
+
+async def get_chat_message_count(chat_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM messages WHERE chat_id = ?", (chat_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+
+async def get_recent_business_chats(limit: int = 10):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT chat_id, sender_name, sender_username, MAX(date) as last_date, COUNT(*) as msg_count
+            FROM messages
+            GROUP BY chat_id
+            ORDER BY last_date DESC
+            LIMIT ?
+        """, (limit,)) as cursor:
+            return await cursor.fetchall()
+
