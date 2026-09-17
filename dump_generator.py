@@ -63,6 +63,8 @@ async def download_media_base64(bot: Bot, file_id: str, media_type: str | None) 
             mime = "image/jpeg"
         elif media_type in ("video", "video_note", "animation"):
             mime = "video/mp4"
+        elif media_type == "sticker":
+            mime = "image/webp"
         else:
             mime = "application/octet-stream"
 
@@ -338,6 +340,24 @@ def generate_chat_dump_html(
                     </div>
                 </div>
             """)
+        elif media_type == "sticker":
+            if media_data:
+                b64_val, mime_val = media_data
+                content_parts.append(f"""
+                    <div style="margin:4px 0;">
+                        <img src="data:{mime_val};base64,{b64_val}" alt="Стикер" style="max-width:160px;max-height:160px;display:block;">
+                    </div>
+                """)
+            else:
+                content_parts.append("""
+                    <div class="media-card-stub">
+                        <div class="media-stub-icon" style="background:#ff9800;font-size:22px;">🎭</div>
+                        <div class="media-stub-meta">
+                            <span class="media-stub-title">Стикер</span>
+                            <span class="media-stub-desc">Стикер Telegram (пропущен)</span>
+                        </div>
+                    </div>
+                """)
 
         # Text and caption
         if text and not diff_html:
@@ -1185,6 +1205,7 @@ async def execute_and_send_dump(
     limit: int | None = None,
     is_chat_cleared: bool = False,
     user_id: int | None = None,
+    included_media_types: set[str] | list[str] | None = None,
 ):
     """Выгружает все сообщения из базы, собирает HTML-файл и отправляет в ЛС владельцу."""
     messages = await db.get_all_chat_messages(chat_id, limit, user_id=user_id)
@@ -1218,7 +1239,9 @@ async def execute_and_send_dump(
     interlocutor_b64 = await get_avatar_base64(bot, chat_id)
     owner_b64 = await get_avatar_base64(bot, owner_id)
 
-    # Скачиваем реальные медиафайлы сообщений (фото, голосовые, видео, кружочки, GIF)
+    # Скачиваем реальные медиафайлы сообщений согласно фильтру
+    allowed_types = set(included_media_types) if included_media_types is not None else {"voice", "audio", "photo", "video", "video_note", "animation", "sticker"}
+
     media_map = {}
     media_tasks = []
     task_keys = []
@@ -1231,7 +1254,7 @@ async def execute_and_send_dump(
     for m in messages:
         fid = m["file_id"]
         mtype = m["media_type"]
-        if fid and mtype in ("voice", "audio", "photo", "video", "video_note", "animation") and fid not in media_map:
+        if fid and mtype in allowed_types and fid not in media_map:
             media_tasks.append(_download_safe(fid, mtype))
             task_keys.append(fid)
 

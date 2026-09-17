@@ -1158,6 +1158,57 @@ async def on_broadcast(message: types.Message):
     )
 
 
+DUMP_MEDIA_OPTIONS = [
+    ("voice", 1, "🎤 Голосовые"),
+    ("video_note", 2, "⭕️ Кружочки"),
+    ("photo", 4, "📸 Фотографии"),
+    ("video", 8, "🎬 Видеозаписи"),
+    ("animation", 16, "🎞 GIF-анимации"),
+    ("sticker", 32, "🎭 Стикеры"),
+]
+
+
+def mask_to_media_types(mask: int) -> set[str]:
+    return {mtype for mtype, bit, _ in DUMP_MEDIA_OPTIONS if (mask & bit)}
+
+
+def build_media_filter_keyboard(chat_id: int, mask: int) -> InlineKeyboardMarkup:
+    rows = []
+    btn_pair = []
+    for mtype, bit, label in DUMP_MEDIA_OPTIONS:
+        is_checked = bool(mask & bit)
+        icon = "✅" if is_checked else "❌"
+        new_mask = mask ^ bit
+        btn_pair.append(InlineKeyboardButton(
+            text=f"{icon} {label}",
+            callback_data=f"dump:tgl:{chat_id}:{new_mask}"
+        ))
+        if len(btn_pair) == 2:
+            rows.append(btn_pair)
+            btn_pair = []
+    if btn_pair:
+        rows.append(btn_pair)
+
+    # Пресеты: Выбрать всё / Снять всё
+    all_mask = sum(bit for _, bit, _ in DUMP_MEDIA_OPTIONS)
+    rows.append([
+        InlineKeyboardButton(text="✅ Выбрать всё", callback_data=f"dump:tgl:{chat_id}:{all_mask}"),
+        InlineKeyboardButton(text="❌ Снять всё", callback_data=f"dump:tgl:{chat_id}:0"),
+    ])
+
+    # Кнопка формирования дампа
+    rows.append([
+        InlineKeyboardButton(text="🚀 Сформировать дамп", callback_data=f"dump:go:{chat_id}:{mask}")
+    ])
+
+    # Назад к выбору диалога
+    rows.append([
+        InlineKeyboardButton(text="⬅️ Назад к списку диалогов", callback_data="dump:open_menu")
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def build_dump_keyboard(chats, page: int, total_chats: int, page_size: int = 5) -> InlineKeyboardMarkup:
     keyboard_rows = []
     for raw_row in chats:
@@ -1171,7 +1222,7 @@ def build_dump_keyboard(chats, page: int, total_chats: int, page_size: int = 5) 
         count = row.get("msg_count", 0)
         btn_text = f"👤 {name} • {count} сообщ."
         keyboard_rows.append([
-            InlineKeyboardButton(text=btn_text, callback_data=f"dump:chat:{row['chat_id']}")
+            InlineKeyboardButton(text=btn_text, callback_data=f"dump:cfg:{row['chat_id']}:0")
         ])
 
     total_pages = max(1, (total_chats + page_size - 1) // page_size)
@@ -1205,13 +1256,15 @@ async def on_dump_pm_command(message: types.Message):
             await message.answer("⛔ Этот диалог не найден среди ваших подключенных бизнес-чатов.")
             return
 
-        await message.answer(f"⏳ Формирую дамп диалога <code>{target_chat_id}</code>...")
-        await dump_generator.execute_and_send_dump(
-            bot=bot,
-            chat_id=target_chat_id,
-            owner_chat_id=message.chat.id,
-            owner_id=user_id,
-            user_id=user_id if not is_owner else None,
+        markup = build_media_filter_keyboard(target_chat_id, mask=0)
+        await message.answer(
+            f"⚙️ <b>Настройка экспорта для чата:</b> <code>{target_chat_id}</code>\n\n"
+            "💡 <i>Так как файлы медиа могут много весить, выберите, что именно включить в дамп:</i>\n"
+            "• ❌ — медиа пропускается (файл будет лёгким, ~30–50 КБ)\n"
+            "• ✅ — медиа скачивается и встраивается в HTML\n\n"
+            "<i>Нажмите на нужные кнопки с крестиками, чтобы включить медиа, затем нажмите «🚀 Сформировать дамп».</i>",
+            reply_markup=markup,
+            parse_mode="HTML"
         )
         return
 
@@ -1322,8 +1375,8 @@ async def on_dump_close_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(F.data.startswith("dump:chat:"))
-async def on_dump_chat_callback(callback: types.CallbackQuery):
+@dp.callback_query(F.data.startswith("dump:cfg:") | F.data.startswith("dump:chat:"))
+async def on_dump_cfg_callback(callback: types.CallbackQuery):
     if not callback.from_user:
         await callback.answer("⛔ Недоступно", show_alert=True)
         return
@@ -1331,10 +1384,12 @@ async def on_dump_chat_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     is_owner = await is_owner_user(user_id)
 
+    parts = callback.data.split(":")
     try:
-        target_chat_id = int(callback.data.split(":")[2])
+        target_chat_id = int(parts[2])
+        mask = int(parts[3]) if len(parts) > 3 else 0
     except (ValueError, IndexError):
-        await callback.answer("Неверный ID чата", show_alert=True)
+        await callback.answer("Неверные параметры", show_alert=True)
         return
 
     has_access = is_owner or await db.is_chat_owned_by_user(user_id, target_chat_id)
@@ -1342,12 +1397,72 @@ async def on_dump_chat_callback(callback: types.CallbackQuery):
         await callback.answer("⛔ Доступ к этому диалогу запрещён.", show_alert=True)
         return
 
+    markup = build_media_filter_keyboard(target_chat_id, mask)
+    try:
+        await callback.message.edit_text(
+            f"⚙️ <b>Настройка экспорта для чата:</b> <code>{target_chat_id}</code>\n\n"
+            "💡 <i>Так как видео и файлы могут много весить, выберите, что именно включить в дамп:</i>\n"
+            "• ❌ — медиа пропускается (файл будет лёгким, ~30–50 КБ)\n"
+            "• ✅ — медиа скачивается и встраивается в HTML\n\n"
+            "<i>Нажмите на нужные кнопки с крестиками, чтобы включить медиа, затем нажмите «🚀 Сформировать дамп».</i>",
+            reply_markup=markup,
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("dump:tgl:"))
+async def on_dump_tgl_callback(callback: types.CallbackQuery):
+    parts = callback.data.split(":")
+    try:
+        chat_id = int(parts[2])
+        mask = int(parts[3])
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+
+    markup = build_media_filter_keyboard(chat_id, mask)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=markup)
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("dump:go:"))
+async def on_dump_go_callback(callback: types.CallbackQuery):
+    if not callback.from_user:
+        await callback.answer("⛔ Недоступно", show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+    is_owner = await is_owner_user(user_id)
+
+    parts = callback.data.split(":")
+    try:
+        target_chat_id = int(parts[2])
+        mask = int(parts[3]) if len(parts) > 3 else 0
+    except (ValueError, IndexError):
+        await callback.answer("Неверные параметры", show_alert=True)
+        return
+
+    has_access = is_owner or await db.is_chat_owned_by_user(user_id, target_chat_id)
+    if not has_access:
+        await callback.answer("⛔ Доступ к этому диалогу запрещён.", show_alert=True)
+        return
+
+    selected_types = mask_to_media_types(mask)
+    labels = [label for mtype, bit, label in DUMP_MEDIA_OPTIONS if mtype in selected_types]
+    media_desc = ", ".join(labels) if labels else "только текст (без медиа)"
+
     await callback.answer("⏳ Запуск выгрузки...")
 
     try:
         await callback.message.edit_text(
             f"⏳ <b>Формирую дамп диалога <code>{target_chat_id}</code>...</b>\n"
-            "<i>Загружаю голосовые, фото, кружочки и оформление...</i>",
+            f"📦 <i>Выбранные медиа: {media_desc}</i>",
             parse_mode="HTML"
         )
     except Exception:
@@ -1359,12 +1474,14 @@ async def on_dump_chat_callback(callback: types.CallbackQuery):
         owner_chat_id=callback.message.chat.id,
         owner_id=user_id,
         user_id=user_id if not is_owner else None,
+        included_media_types=selected_types,
     )
 
     if success:
         try:
             await callback.message.edit_text(
-                f"✅ <b>Дамп диалога <code>{target_chat_id}</code> успешно отправлен файлом выше!</b>",
+                f"✅ <b>Дамп диалога <code>{target_chat_id}</code> успешно отправлен файлом выше!</b>\n"
+                f"<i>Встроенные медиа: {media_desc}</i>",
                 parse_mode="HTML"
             )
         except Exception:

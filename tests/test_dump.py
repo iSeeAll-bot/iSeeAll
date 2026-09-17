@@ -1,5 +1,5 @@
 import pytest
-from bot import parse_dump_command, build_dump_keyboard
+from bot import parse_dump_command, build_dump_keyboard, build_media_filter_keyboard, mask_to_media_types
 
 
 def test_parse_dump_command():
@@ -21,9 +21,29 @@ def test_build_dump_keyboard_single_page():
     markup = build_dump_keyboard(chats, page=0, total_chats=2, page_size=5)
     assert len(markup.inline_keyboard) == 3  # 2 chats + 1 close button
     assert "Alice" in markup.inline_keyboard[0][0].text
-    assert markup.inline_keyboard[0][0].callback_data == "dump:chat:101"
-    assert markup.inline_keyboard[1][0].callback_data == "dump:chat:102"
+    assert markup.inline_keyboard[0][0].callback_data == "dump:cfg:101:0"
+    assert markup.inline_keyboard[1][0].callback_data == "dump:cfg:102:0"
     assert markup.inline_keyboard[2][0].callback_data == "dump:close"
+
+
+def test_media_filter_keyboard():
+    # Test mask = 0 (all crosses)
+    kb0 = build_media_filter_keyboard(chat_id=123, mask=0)
+    for row in kb0.inline_keyboard[:3]:
+        for btn in row:
+            assert "❌" in btn.text
+
+    # Test toggling bit 1 (voice) -> mask = 1
+    kb1 = build_media_filter_keyboard(chat_id=123, mask=1)
+    assert "✅ 🎤 Голосовые" in kb1.inline_keyboard[0][0].text
+    assert "❌ ⭕️ Кружочки" in kb1.inline_keyboard[0][1].text
+
+
+def test_mask_to_media_types():
+    assert mask_to_media_types(0) == set()
+    assert mask_to_media_types(1) == {"voice"}
+    assert mask_to_media_types(3) == {"voice", "video_note"}
+    assert mask_to_media_types(63) == {"voice", "video_note", "photo", "video", "animation", "sticker"}
 
 
 def test_build_dump_keyboard_pagination():
