@@ -1153,13 +1153,15 @@ async def on_broadcast(message: types.Message):
 
 def build_dump_keyboard(chats, page: int, total_chats: int, page_size: int = 5) -> InlineKeyboardMarkup:
     keyboard_rows = []
-    for row in chats:
-        name = row["sender_name"] or f"Чат {row['chat_id']}"
-        if row.get("sender_username") and ("@" not in name):
-            name = f"{name} (@{row['sender_username']})"
+    for raw_row in chats:
+        row = dict(raw_row)
+        name = row.get("sender_name") or f"Чат {row.get('chat_id')}"
+        username = row.get("sender_username")
+        if username and ("@" not in name):
+            name = f"{name} (@{username})"
         if len(name) > 28:
             name = name[:25] + "..."
-        count = row["msg_count"]
+        count = row.get("msg_count", 0)
         btn_text = f"👤 {name} • {count} сообщ."
         keyboard_rows.append([
             InlineKeyboardButton(text=btn_text, callback_data=f"dump:chat:{row['chat_id']}")
