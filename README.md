@@ -21,6 +21,12 @@
 
 Подходит для Ubuntu/Debian. Рекомендуется зарубежный VPS — тогда Telegram API доступен напрямую, без прокси.
 
+**Вариант 1. Одной командой (быстрее всего):**
+```bash
+curl -sSL https://raw.githubusercontent.com/iSeeAll-bot/iSeeAll/main/install.sh | sudo bash
+```
+
+**Вариант 2. Через git clone:**
 ```bash
 git clone https://github.com/iSeeAll-bot/iSeeAll.git
 cd iSeeAll

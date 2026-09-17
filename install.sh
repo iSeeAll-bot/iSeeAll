@@ -3,6 +3,7 @@
 # iSeeAll — универсальный установщик для VPS (Ubuntu/Debian)
 # Спрашивает: название, метод (systemd/Docker), токен бота, ID владельца.
 # Использование: sudo bash install.sh
+# Или одной командой: curl -sSL https://raw.githubusercontent.com/iSeeAll-bot/iSeeAll/main/install.sh | sudo bash
 # По вопросам: @xicge
 
 set -euo pipefail
@@ -31,12 +32,12 @@ if [[ $EUID -ne 0 ]]; then
     fail "Запусти через sudo: sudo bash install.sh"
 fi
 
-info "Проверяю системные пакеты (python3, venv, pip)..."
+info "Проверяю системные пакеты (git, python3, venv, pip)..."
 if command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq
-    apt-get install -y -qq python3 python3-venv python3-pip >/dev/null
+    apt-get install -y -qq git python3 python3-venv python3-pip >/dev/null
 else
-    warn "apt-get не найден — предполагаю, что python3/venv/pip уже установлены."
+    warn "apt-get не найден — предполагаю, что пакеты уже установлены."
 fi
 command -v python3 >/dev/null 2>&1 || fail "python3 не найден."
 info "Python: $(python3 --version)"
@@ -69,12 +70,29 @@ while ! [[ "$METHOD" =~ ^[12]$ ]]; do
 done
 if [[ "$METHOD" == "1" ]]; then info "Выбрано: systemd"; else info "Выбрано: Docker"; fi
 
+info "Подготовка файлов проекта..."
+CLEANUP_TMP=""
+SRC_DIR="."
+if [[ ! -f "bot.py" || ! -f "dump_generator.py" ]]; then
+    info "Файлы бота не найдены в текущей директории. Клонирую актуальный репозиторий с GitHub..."
+    command -v git >/dev/null 2>&1 || fail "git не установлен. Установи git и запусти снова."
+    TMP_DIR="$(mktemp -d /tmp/iseeall-install.XXXXXX)"
+    CLEANUP_TMP="$TMP_DIR"
+    git clone --depth=1 "$REPO_URL.git" "$TMP_DIR" >/dev/null 2>&1 || fail "Не удалось склонировать репозиторий $REPO_URL"
+    SRC_DIR="$TMP_DIR"
+fi
+
 info "Копирую проект в ${INSTALL_DIR}..."
 mkdir -p "$INSTALL_DIR"
-for f in bot.py config.py database.py requirements.txt README.md .env.example docker-compose.yml Dockerfile; do
-    [[ -f "$f" ]] && cp "$f" "$INSTALL_DIR/"
+for f in bot.py config.py database.py dump_generator.py requirements.txt README.md .env.example docker-compose.yml Dockerfile; do
+    [[ -f "$SRC_DIR/$f" ]] && cp "$SRC_DIR/$f" "$INSTALL_DIR/"
 done
-[[ -f "$INSTALL_DIR/bot.py" ]] || fail "bot.py не скопировался — запускай установщик из корня склонированного репозитория."
+
+if [[ -n "$CLEANUP_TMP" && -d "$CLEANUP_TMP" ]]; then
+    rm -rf "$CLEANUP_TMP"
+fi
+
+[[ -f "$INSTALL_DIR/bot.py" && -f "$INSTALL_DIR/dump_generator.py" ]] || fail "Файлы проекта не скопировались."
 
 ENV_FILE="$INSTALL_DIR/.env"
 echo
