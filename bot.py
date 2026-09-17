@@ -1191,28 +1191,49 @@ def build_dump_keyboard(chats, page: int, total_chats: int, page_size: int = 5) 
 
 @dp.message(Command("dump"))
 async def on_dump_pm_command(message: types.Message):
-    if not message.from_user or not await is_owner_user(message.from_user.id):
-        await message.answer("⛔ Команда доступна только владельцу бота.")
+    if not message.from_user:
         return
+
+    user_id = message.from_user.id
+    is_owner = await is_owner_user(user_id)
 
     parts = (message.text or "").strip().split()
     if len(parts) > 1 and (parts[1].isdigit() or (parts[1].startswith("-") and parts[1][1:].isdigit())):
         target_chat_id = int(parts[1])
+        has_access = is_owner or await db.is_chat_owned_by_user(user_id, target_chat_id)
+        if not has_access:
+            await message.answer("⛔ Этот диалог не найден среди ваших подключенных бизнес-чатов.")
+            return
+
         await message.answer(f"⏳ Формирую дамп диалога <code>{target_chat_id}</code>...")
         await dump_generator.execute_and_send_dump(
             bot=bot,
             chat_id=target_chat_id,
             owner_chat_id=message.chat.id,
-            owner_id=message.from_user.id
+            owner_id=user_id,
+            user_id=user_id if not is_owner else None,
         )
         return
 
-    total_chats = await db.get_business_chats_count()
+    total_chats = await db.get_user_business_chats_count(user_id)
     if total_chats == 0:
-        await message.answer("ℹ️ В базе пока нет сохраненных бизнес-диалогов.")
-        return
+        if is_owner:
+            total_chats = await db.get_business_chats_count()
+            if total_chats == 0:
+                await message.answer("ℹ️ В базе пока нет сохраненных бизнес-диалогов.")
+                return
+            chats = await db.get_business_chats_page(limit=5, offset=0)
+        else:
+            await message.answer(
+                "ℹ️ <b>У вас пока нет сохранённых диалогов.</b>\n\n"
+                "Чтобы бот сохранял сообщения и делал дампы, подключите его к своему аккаунту:\n"
+                "<b>Настройки Telegram → Telegram Business → Бизнес-боты → Добавить бота</b>",
+                parse_mode="HTML"
+            )
+            return
+    else:
+        chats = await db.get_user_business_chats_page(user_id, limit=5, offset=0)
 
-    chats = await db.get_business_chats_page(limit=5, offset=0)
     markup = build_dump_keyboard(chats, page=0, total_chats=total_chats, page_size=5)
     await message.answer(
         "📁 <b>Выберите собеседника для выгрузки дампа:</b>\n\n"
@@ -1223,9 +1244,12 @@ async def on_dump_pm_command(message: types.Message):
 
 @dp.callback_query(F.data.startswith("dump:page:"))
 async def on_dump_page_callback(callback: types.CallbackQuery):
-    if not callback.from_user or not await is_owner_user(callback.from_user.id):
+    if not callback.from_user:
         await callback.answer("⛔ Недоступно", show_alert=True)
         return
+
+    user_id = callback.from_user.id
+    is_owner = await is_owner_user(user_id)
 
     try:
         page = int(callback.data.split(":")[2])
@@ -1233,8 +1257,13 @@ async def on_dump_page_callback(callback: types.CallbackQuery):
         await callback.answer()
         return
 
-    total_chats = await db.get_business_chats_count()
-    chats = await db.get_business_chats_page(limit=5, offset=page * 5)
+    total_chats = await db.get_user_business_chats_count(user_id)
+    if total_chats == 0 and is_owner:
+        total_chats = await db.get_business_chats_count()
+        chats = await db.get_business_chats_page(limit=5, offset=page * 5)
+    else:
+        chats = await db.get_user_business_chats_page(user_id, limit=5, offset=page * 5)
+
     markup = build_dump_keyboard(chats, page=page, total_chats=total_chats, page_size=5)
 
     try:
@@ -1246,16 +1275,30 @@ async def on_dump_page_callback(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "dump:open_menu")
 async def on_dump_open_menu_callback(callback: types.CallbackQuery):
-    if not callback.from_user or not await is_owner_user(callback.from_user.id):
+    if not callback.from_user:
         await callback.answer("⛔ Недоступно", show_alert=True)
         return
 
-    total_chats = await db.get_business_chats_count()
-    if total_chats == 0:
-        await callback.answer("ℹ️ В базе пока нет сохраненных бизнес-диалогов.", show_alert=True)
-        return
+    user_id = callback.from_user.id
+    is_owner = await is_owner_user(user_id)
 
-    chats = await db.get_business_chats_page(limit=5, offset=0)
+    total_chats = await db.get_user_business_chats_count(user_id)
+    if total_chats == 0:
+        if is_owner:
+            total_chats = await db.get_business_chats_count()
+            if total_chats == 0:
+                await callback.answer("ℹ️ В базе пока нет сохраненных бизнес-диалогов.", show_alert=True)
+                return
+            chats = await db.get_business_chats_page(limit=5, offset=0)
+        else:
+            await callback.answer(
+                "ℹ️ У вас пока нет подключённого бизнес-аккаунта или сохранённых диалогов.",
+                show_alert=True
+            )
+            return
+    else:
+        chats = await db.get_user_business_chats_page(user_id, limit=5, offset=0)
+
     markup = build_dump_keyboard(chats, page=0, total_chats=total_chats, page_size=5)
     await callback.message.answer(
         "📁 <b>Выберите собеседника для выгрузки дампа:</b>\n\n"
@@ -1281,9 +1324,12 @@ async def on_dump_close_callback(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("dump:chat:"))
 async def on_dump_chat_callback(callback: types.CallbackQuery):
-    if not callback.from_user or not await is_owner_user(callback.from_user.id):
+    if not callback.from_user:
         await callback.answer("⛔ Недоступно", show_alert=True)
         return
+
+    user_id = callback.from_user.id
+    is_owner = await is_owner_user(user_id)
 
     try:
         target_chat_id = int(callback.data.split(":")[2])
@@ -1291,12 +1337,17 @@ async def on_dump_chat_callback(callback: types.CallbackQuery):
         await callback.answer("Неверный ID чата", show_alert=True)
         return
 
+    has_access = is_owner or await db.is_chat_owned_by_user(user_id, target_chat_id)
+    if not has_access:
+        await callback.answer("⛔ Доступ к этому диалогу запрещён.", show_alert=True)
+        return
+
     await callback.answer("⏳ Запуск выгрузки...")
 
     try:
         await callback.message.edit_text(
             f"⏳ <b>Формирую дамп диалога <code>{target_chat_id}</code>...</b>\n"
-            "<i>Загружаю голосовые, фото и оформление...</i>",
+            "<i>Загружаю голосовые, фото, кружочки и оформление...</i>",
             parse_mode="HTML"
         )
     except Exception:
@@ -1306,7 +1357,8 @@ async def on_dump_chat_callback(callback: types.CallbackQuery):
         bot=bot,
         chat_id=target_chat_id,
         owner_chat_id=callback.message.chat.id,
-        owner_id=callback.from_user.id
+        owner_id=user_id,
+        user_id=user_id if not is_owner else None,
     )
 
     if success:

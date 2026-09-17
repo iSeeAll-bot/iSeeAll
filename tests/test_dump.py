@@ -1,3 +1,4 @@
+import pytest
 from bot import parse_dump_command, build_dump_keyboard
 
 
@@ -145,5 +146,48 @@ def test_generate_chat_dump_html_media():
     # Check missing media note fallback stub
     assert "media-card-stub" in html
     assert "Видеосообщение (кружочек)" in html
+
+
+def test_user_business_chats_isolation(monkeypatch, tmp_path):
+    import asyncio
+    import database as db
+
+    async def _run():
+        test_db = str(tmp_path / "test_iso.db")
+        monkeypatch.setattr(db, "DB_PATH", test_db)
+        await db.init_db()
+
+        # User 1 connection
+        await db.save_connection("conn_1", user_id=1001, user_chat_id=1001, can_reply=True, is_enabled=True)
+        # User 2 connection
+        await db.save_connection("conn_2", user_id=2002, user_chat_id=2002, can_reply=True, is_enabled=True)
+
+        # User 1 has chat with 5001
+        await db.save_message("conn_1", msg_id=1, chat_id=5001, sender_id=5001, sender_name="Target 1", sender_username="t1", text="Hello U1", caption=None, media_type=None, file_id=None, file_unique_id=None)
+        # User 2 has chat with 5002
+        await db.save_message("conn_2", msg_id=2, chat_id=5002, sender_id=5002, sender_name="Target 2", sender_username="t2", text="Hello U2", caption=None, media_type=None, file_id=None, file_unique_id=None)
+
+        # User 1 should only see 1 chat (5001)
+        assert await db.get_user_business_chats_count(1001) == 1
+        u1_chats = await db.get_user_business_chats_page(1001, limit=5, offset=0)
+        assert len(u1_chats) == 1
+        assert u1_chats[0]["chat_id"] == 5001
+
+        # User 2 should only see 1 chat (5002)
+        assert await db.get_user_business_chats_count(2002) == 1
+        u2_chats = await db.get_user_business_chats_page(2002, limit=5, offset=0)
+        assert len(u2_chats) == 1
+        assert u2_chats[0]["chat_id"] == 5002
+
+        # User 3 (no connections) should see 0 chats
+        assert await db.get_user_business_chats_count(3003) == 0
+
+        # Ownership checks
+        assert await db.is_chat_owned_by_user(1001, 5001) is True
+        assert await db.is_chat_owned_by_user(1001, 5002) is False
+        assert await db.is_chat_owned_by_user(2002, 5002) is True
+        assert await db.is_chat_owned_by_user(2002, 5001) is False
+
+    asyncio.run(_run())
 
 

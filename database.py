@@ -321,15 +321,35 @@ async def save_message_edit(connection_id: str, chat_id: int, msg_id: int, old_t
         await db.commit()
 
 
-async def get_all_chat_messages(chat_id: int, limit: int | None = None):
+async def get_all_chat_messages(chat_id: int, limit: int | None = None, user_id: int | None = None):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        if limit:
-            query = "SELECT * FROM (SELECT * FROM messages WHERE chat_id = ? ORDER BY msg_id DESC LIMIT ?) ORDER BY msg_id ASC"
-            params = (chat_id, limit)
+        if user_id is not None:
+            if limit:
+                query = """
+                    SELECT * FROM (
+                        SELECT m.* FROM messages m
+                        JOIN business_connections bc ON m.connection_id = bc.connection_id
+                        WHERE m.chat_id = ? AND bc.user_id = ?
+                        ORDER BY m.msg_id DESC LIMIT ?
+                    ) ORDER BY msg_id ASC
+                """
+                params = (chat_id, user_id, limit)
+            else:
+                query = """
+                    SELECT m.* FROM messages m
+                    JOIN business_connections bc ON m.connection_id = bc.connection_id
+                    WHERE m.chat_id = ? AND bc.user_id = ?
+                    ORDER BY m.msg_id ASC
+                """
+                params = (chat_id, user_id)
         else:
-            query = "SELECT * FROM messages WHERE chat_id = ? ORDER BY msg_id ASC"
-            params = (chat_id,)
+            if limit:
+                query = "SELECT * FROM (SELECT * FROM messages WHERE chat_id = ? ORDER BY msg_id DESC LIMIT ?) ORDER BY msg_id ASC"
+                params = (chat_id, limit)
+            else:
+                query = "SELECT * FROM messages WHERE chat_id = ? ORDER BY msg_id ASC"
+                params = (chat_id,)
         async with db.execute(query, params) as cursor:
             return await cursor.fetchall()
 
@@ -395,4 +415,53 @@ async def get_business_chats_page(limit: int = 5, offset: int = 0):
             LIMIT ? OFFSET ?
         """, (limit, offset)) as cursor:
             return await cursor.fetchall()
+
+
+async def get_user_business_chats_count(user_id: int) -> int:
+    """Возвращает количество уникальных бизнес-диалогов конкретного пользователя."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT COUNT(DISTINCT m.chat_id) 
+            FROM messages m
+            JOIN business_connections bc ON m.connection_id = bc.connection_id
+            WHERE bc.user_id = ?
+        """, (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+
+async def get_user_business_chats_page(user_id: int, limit: int = 5, offset: int = 0):
+    """Возвращает страницу бизнес-диалогов конкретного пользователя (по дате убывания)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT 
+                m.chat_id, 
+                COALESCE(
+                    MAX(CASE WHEN m.sender_id = m.chat_id THEN m.sender_name END),
+                    MAX(m.sender_name)
+                ) as sender_name,
+                MAX(CASE WHEN m.sender_id = m.chat_id THEN m.sender_username END) as sender_username,
+                MAX(m.date) as last_date, 
+                COUNT(*) as msg_count
+            FROM messages m
+            JOIN business_connections bc ON m.connection_id = bc.connection_id
+            WHERE bc.user_id = ?
+            GROUP BY m.chat_id
+            ORDER BY last_date DESC
+            LIMIT ? OFFSET ?
+        """, (user_id, limit, offset)) as cursor:
+            return await cursor.fetchall()
+
+
+async def is_chat_owned_by_user(user_id: int, chat_id: int) -> bool:
+    """Проверяет, принадлежит ли чат бизнес-подключению данного пользователя."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT 1 FROM messages m
+            JOIN business_connections bc ON m.connection_id = bc.connection_id
+            WHERE bc.user_id = ? AND m.chat_id = ?
+            LIMIT 1
+        """, (user_id, chat_id)) as cursor:
+            return (await cursor.fetchone()) is not None
 

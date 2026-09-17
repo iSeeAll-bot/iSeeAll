@@ -1184,9 +1184,10 @@ async def execute_and_send_dump(
     owner_id: int,
     limit: int | None = None,
     is_chat_cleared: bool = False,
+    user_id: int | None = None,
 ):
     """Выгружает все сообщения из базы, собирает HTML-файл и отправляет в ЛС владельцу."""
-    messages = await db.get_all_chat_messages(chat_id, limit)
+    messages = await db.get_all_chat_messages(chat_id, limit, user_id=user_id)
     if not messages:
         await bot.send_message(
             owner_chat_id,
